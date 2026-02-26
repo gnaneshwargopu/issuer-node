@@ -18,25 +18,32 @@ pub struct Issuer {
 }
 
 impl Issuer {
-    /// Initialize new issuer with 3 empty trees
     pub fn new() -> Self {
         let mut db = Db::new();
         let mut claims_tree = SparseMerkleTree::new();
 
-        // Rebuild tree from DB
         for (id, commitment) in db.load_claims() {
-           claims_tree.insert(id, commitment).unwrap();
+            claims_tree.insert(id, commitment).unwrap();
         }
 
         Issuer {
-          claims_tree,
-          revocation_tree: SparseMerkleTree::new(),
-         roots_tree: SparseMerkleTree::new(),
-         db,
+            claims_tree,
+            revocation_tree: SparseMerkleTree::new(),
+            roots_tree: SparseMerkleTree::new(),
+            db,
         }
     }
 
-    /// Issue claim at given index in Claims Tree
+    pub fn compute_state(&self) -> Result<Fr, String> {
+        let claims_root = self.claims_tree.root();
+        let revocation_root = self.revocation_tree.root();
+
+        crate::hash::poseidon::poseidon_hash(&[
+            claims_root,
+            revocation_root,
+        ])
+    }
+
     pub fn issue_claim(
         &mut self,
         index: u64,
@@ -44,27 +51,36 @@ impl Issuer {
     ) -> Result<Fr, String> {
         let commitment = claim.commitment()?;
 
-        // Save to DB
         self.db.save_claim(index, &claim, &commitment);
 
-        // Insert into Claims Tree
         self.claims_tree.insert(index, commitment)?;
 
         let claims_root = self.claims_tree.root();
+        let revocation_root = self.revocation_tree.root();
+        let state = self.compute_state()?;
 
-        // Insert Claims Root into Roots Tree (index 0 for MVP)
-        self.db.save_root(&claims_root, &self.revocation_tree.root());
+        self.db
+            .save_state(&state, &claims_root, &revocation_root);
 
-        Ok(claims_root)
+        Ok(state)
     }
 
-    /// Revoke claim by inserting index into Revocation Tree
-    pub fn revoke_claim(&mut self, index: u64) -> Result<Fr, String> {
+    pub fn revoke_claim(
+        &mut self,
+        index: u64,
+    ) -> Result<Fr, String> {
         let flag = Fr::from_str("1").unwrap();
 
         self.revocation_tree.insert(index, flag)?;
 
-        Ok(self.revocation_tree.root())
+        let claims_root = self.claims_tree.root();
+        let revocation_root = self.revocation_tree.root();
+        let state = self.compute_state()?;
+
+        self.db
+            .save_state(&state, &claims_root, &revocation_root);
+
+        Ok(state)
     }
 }
 
